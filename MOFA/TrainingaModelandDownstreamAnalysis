@@ -1,0 +1,202 @@
+#load libraries
+library(MOFA2)
+library(data.table)
+library(tidyverse)
+library('rhdf5')
+
+#Training a model
+data <- make_example_data(
+  n_views = 2, 
+  n_samples = 200, 
+  n_features = 1000, 
+  n_factors = 10
+)[[1]]
+
+lapply(data,dim)
+
+#create the Mofa object
+MOFAobject <- create_mofa(data)
+
+#multi-group functionality, the groups can be specified using a vector with the group ID for each sample
+N = ncol(data[[1]])
+groups = c(rep("A",N/2), rep("B",N/2))
+
+MOFAobject <- create_mofa(data, groups=groups)
+
+#Long data.frame
+dt = fread("ftp://ftp.ebi.ac.uk/pub/databases/mofa/getting_started/data.txt.gz")
+head(dt)
+
+#get rid of grouping info
+dt[,group:=NULL]
+
+#Create the MOFA object
+MOFAobject <- create_mofa(dt)
+print(MOFAobject)
+
+#visualize
+plot_data_overview(MOFAobject)
+
+#Define options
+data_opts <- get_default_data_options(MOFAobject)
+head(data_opts)
+
+#Define model options
+model_opts <- get_default_model_options(MOFAobject)
+head(model_opts)
+
+#Define train options
+train_opts <- get_default_training_options(MOFAobject)
+head(train_opts)
+
+#Build and Train the MOFA object
+#Prepare
+MOFAobject <- prepare_mofa(
+  object = MOFAobject,
+  data_options = data_opts,
+  model_options = model_opts,
+  training_options = train_opts
+)
+
+#Train the MOFA model
+outfile = file.path(getwd(),"model.hdf5")
+MOFAobject.trained <- run_mofa(MOFAobject, outfile, use_basilisk = TRUE)
+
+#start of downstream analysis workflow
+filepath <- system.file("extdata", "model.hdf5", package = "MOFA2")
+print(filepath)
+
+model <- load_model(filepath)
+plot_data_overview(model)
+
+#Adding artificial metadata
+Nsamples = sum(model@dimensions$N)
+
+sample_metadata <- data.frame(
+  sample = samples_names(model)[[1]],
+  condition = sample(c("A","B"), size = Nsamples, replace = T),
+  age = sample(1:100, size = Nsamples, replace = T)
+)
+
+samples_metadata(model) <- sample_metadata
+head(model@samples_metadata, n=3)
+
+#Variance decomposition
+# Total variance explained per view and group
+head(model@cache$variance_explained$r2_total[[1]]) # group 1
+
+# Variance explained for every factor in per view and group
+head(model@cache$variance_explained$r2_per_factor[[1]]) # group 1
+
+#by factor
+plot_variance_explained(model, x="view", y="factor")
+#by group
+plot_variance_explained(model, x="group", y="factor", plot_total = T)[[2]]
+
+plot_factor(model, 
+            factor = 1:3,
+            color_by = "age",
+            shape_by = "condition"
+)
+p <- plot_factor(model, 
+                 factors = c(1,2,3),
+                 color_by = "condition",
+                 dot_size = 3,        # change dot size
+                 dodge = T,           # dodge points with different colors
+                 legend = F,          # remove legend
+                 add_violin = T,      # add violin plots,
+                 violin_alpha = 0.25  # transparency of violin plots
+)
+
+# The output of plot_factor is a ggplot2 object that we can edit
+p <- p + 
+  scale_color_manual(values=c("A"="black", "B"="red")) +
+  scale_fill_manual(values=c("A"="black", "B"="red"))
+
+print(p)
+
+#Visualization of combinations of factors
+plot_factors(model, 
+             factors = 1:3,
+             color_by = "condition"
+)
+
+#Visualization of feature weights
+#Beeswarm
+plot_weights(model,
+             view = "view_0",
+             factor = 1,
+             nfeatures = 10,     # Number of features to highlight
+             scale = T,          # Scale weights from -1 to 1
+             abs = F             # Take the absolute value?
+)
+
+#Scatter
+plot_top_weights(model,
+                 view = "view_0",
+                 factor = 1,
+                 nfeatures = 10
+)
+
+#Visualization of patterns in the input data
+#Heatmaps
+plot_data_heatmap(model,
+                  view = "view_1",         # view of interest
+                  factor = 1,             # factor of interest
+                  features = 20,          # number of features to plot (they are selected by weight)
+                  
+                  # extra arguments that are passed to the `pheatmap` function
+                  cluster_rows = TRUE, cluster_cols = FALSE,
+                  show_rownames = TRUE, show_colnames = FALSE
+)
+#Scatter Plots
+plot_data_scatter(model,
+                  view = "view_1",         # view of interest
+                  factor = 1,             # factor of interest
+                  features = 5,           # number of features to plot (they are selected by weight)
+                  add_lm = TRUE,          # add linear regression
+                  color_by = "condition"
+)
+
+#non-linear dimensionality reduction (UMAP tsne)
+set.seed(42)
+# model <- run_umap(model)
+model <- run_tsne(model)
+
+#Plot non-linear dimensionality reduction
+plot_dimred(model,
+            method = "TSNE",  # method can be either "TSNE" or "UMAP"
+            color_by = "condition"
+)
+
+#Renaming dimensions
+views_names(model) <- c("Transcriptomics", "Proteomics")
+factors_names(model) <- paste("Factor", 1:model@dimensions[["K"]], sep=" ")
+views_names(model)
+
+#Extracting data for downstream analysis
+# "factors" is a list of matrices, one matrix per group with dimensions (nsamples, nfactors)
+factors <- get_factors(model, factors = "all")
+lapply(factors,dim)
+
+#extract weights
+# "weights" is a list of matrices, one matrix per view with dimensions (nfeatures, nfactors)
+weights <- get_weights(model, views = "all", factors = "all")
+lapply(weights,dim)
+
+#extract
+# "data" is a nested list of matrices, one matrix per view and group with dimensions (nfeatures, nsamples)
+data <- get_data(model)
+lapply(data, function(x) lapply(x, dim))[[1]]
+
+#single-group
+factors <- get_factors(model, as.data.frame = T)
+head(factors, n=3)
+
+#Transcriptomics weights
+weights <- get_weights(model, as.data.frame = T)
+head(weights, n=3)
+
+#all together
+data <- get_data(model, as.data.frame = T)
+head(data, n=3)
