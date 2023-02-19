@@ -1,0 +1,102 @@
+#Imports
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import torchvision.datasets as datasets
+import torchvision.transforms as transforms
+
+#Convert simple NN to a simple CNN
+class CNN(nn.Module):
+    def __init__(self, in_channels=1, num_classes=10):
+        super(CNN, self).__init__()
+        #output will change as fx of kernel stride and padding(Same convolution). These exact settings give us the same dimensions
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=8, kernel_size=(3,3), stride=(1,1), padding=(1,1)) 
+        self.pool = nn.MaxPool2d(kernel_size=(2,2), stride =(2,2))
+        #out channel from conv1 must equal in channel here. Note outchannel in this layer too
+        self.conv2 = nn.Conv2d(in_channels=8, out_channels=16, kernel_size=(3,3), stride=(1,1), padding=(1,1)) 
+        self.fc1 = nn.Linear(16*7*7, num_classes) #Two pooling layers, halve input twice 28/2/2= . 28 derived from formula
+
+    def forward(self,x):
+        x= F.relu(self.conv1(x))
+        x= self.pool(x)
+        x= F.relu(self.conv2(x))
+        x= self.pool(x) #okay to reuse pooling
+        x= x.reshape(x.shape[0], -1) #This is where we flatten
+        x = self.fc1(x)
+
+        return x
+
+model = CNN()
+x = torch.randn(64,1,28,28)
+#print(model(x).shape) #returns torch.Size([64,10])
+#exit()
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+#Hyperparameters
+in_channel = 1
+num_classes = 10
+learning_rate = 0.001
+batch_size = 64
+num_epochs = 5
+
+#Load Data
+train_dataset = datasets.MNIST(root = 'dataset/', train = True, transform = transforms.ToTensor(), download = True)
+train_loader = DataLoader(dataset = train_dataset, batch_size=batch_size, shuffle = True)
+test_dataset = datasets.MNIST(root = 'dataset/', train = False, transform = transforms.ToTensor(), download = True)
+test_loader = DataLoader(dataset = test_dataset, batch_size=batch_size, shuffle = True)
+
+#Initialize Network
+model = CNN().to(device) #CNN parameters above, no need to pass anything here
+
+#Loss and Optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr = learning_rate)
+
+#Train Network
+for epoch in range(num_epochs): #an epoch means the network has seen all the images in a dataset
+    for batch_idx, (data, targets) in enumerate(train_loader): #go through each batch in training loader, see what batch index we have. data = images and correct digit per image
+        #Get data to cuda if possible
+        data = data.to(device=device)
+        targets = targets.to(device=device)
+        #data is already in correct shape, no need to flatten
+
+        #forward
+        scores = model(data)
+        loss = criterion(scores, targets)
+
+        #backwards
+        optimizer.zero_grad()
+        loss.backward()
+
+        #gradient descent or adam step
+        optimizer.step()
+
+#Check accuracy on training and test model fit
+def check_accuracy(loader, model):
+    if loader.dataset.train:
+        print('Checking accuracy on training data')
+    else:
+        print("Checking accuracy on test data")
+    num_correct=0
+    num_samples=0
+    model.eval()
+
+    with torch.no_grad():
+        for x,y in loader: 
+            x= x.to(device= device)
+            y = y.to(device=device)
+            #Again, no need to reshape
+            scores = model(x) #64x10 
+            _, predictions = scores.max(1)
+            num_correct += (predictions == y).sum()
+            num_samples += predictions.size(0)
+        
+        print(f'Got {num_correct} / {num_samples} with accuracy {float(num_correct)/float(num_samples)*100:.2f}')
+
+    model.train()
+    #return accuracy
+check_accuracy(train_loader, model)
+check_accuracy(test_loader, model)
